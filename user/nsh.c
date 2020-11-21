@@ -7,39 +7,10 @@
 #define REDIR 2
 #define PIPE  3
 
-struct cmd
-{
-    int type;
-};
+char args[MAXARG][MAXARG];
+int l;
 
-struct execcmd
-{
-    int type;
-    char *argv[MAXARG];
-};
-
-struct redircmd
-{
-    int type;
-    struct cmd *cmd;
-    char *file;
-    int mode;
-    int fd;
-};
-
-struct pipecmd
-{
-    int type;
-    struct cmd *left;
-    struct cmd *right;
-};
-
-struct execcmd execcmd_list[MAXARG];
-struct redircmd redircmd_list[MAXARG];
-struct pipecmd pipecmd_list[MAXARG];
-int e_list = 0;
-int r_list = 0;
-int p_list = 0;
+void runcmd(char *argv[],int argc);
 
 int
 getcmd(char *buf, int nbuf)
@@ -52,83 +23,83 @@ getcmd(char *buf, int nbuf)
   return 0;
 }
 
-void runcmd(struct cmd *cmd){
-    int p[2];
-    switch (cmd->type)
-    {
-    case EXEC:
-        struct execcmd *ecmd = (struct execcmd*)cmd;
-        exec(ecmd->argv[0],ecmd->argv);
-        fprintf(2,"exec %s fail",ecmd->argv[0]);
-        break;
-    case REDIR:
-        struct redircmd *rcmd = (struct redircmd*)cmd;
-        close(rcmd->fd);
-        if(open(rcmd->file,rcmd->mode)<0){
-            fprintf(2,"open %s fail",rcmd->file);
-            exit(-1);
-        }
-        runcmd(rcmd->cmd);
-        break;
-    case PIPE:
-        struct pipecmd *pcmd = (struct pipecmd*)cmd;
-        if(pipe(p)<0){
-            fprintf(2,"pipe fail");
-            exit(-1);
-        }
-        if(fork()==0){
-            close(1);
-            dup(p[1]);
-            close(p[0]);
-            close(p[1]);
-            runcmd(pcmd->left);
-        }
-        if(fork()==0){
-            close(0);
-            dup(p[0]);
-            close(p[0]);
-            close(p[1]);
-            runcmd(pcmd->right);
-        }
-        wait(0);
-        wait(0);
-        break;
-    default:
-        break;
+void parsecmd(char *cmd){
+  int i=0,j=0;
+  l = 0;
+  while(cmd[i] != '\n' && cmd[i] != '\0'){
+    while(strchr(" ",cmd[i])){
+      i++;
     }
-    exit(0);
+    while(!strchr(" \n\0",cmd[i])){
+      args[l][j] = cmd[i];
+      j++;
+      i++;
+    }
+    args[l][j] = '\0';
+    l++;
+    j = 0;
+  }
 }
 
-struct cmd* parseexec(char *ps ,char *es){
-
-    int flag = 0;
-    while(ps < es && *ps != '|')
-        ps++;
+void execpipe(int b,char*argv[],int argc){
+  argv[b] = 0;
+  int fd[2];
+  pipe(fd);
+  if(fork()==0){
+    close(1);
+    dup(fd[1]);
+    close(fd[0]);
+    close(fd[1]);
+    runcmd(argv,b+1);
+  }else
+  {
+    close(0);
+    dup(fd[0]);
+    close(fd[0]);
+    close(fd[1]);
+    runcmd(argv+b+1,argc-b-1);
+  }
 }
 
-struct cmd* parsecmd(char *ps ,char *es){
-    struct cmd *cmd;
-    cmd = parseexec(ps,es);
-    while(ps < es && strchr(" ", *ps))
-        ps++;
-    if(*(ps) == '|'){
-        ps++;
-        while(ps < es && strchr(" ", *ps))
-            ps++;
-        pipecmd_list[p_list].type = PIPE;
-        pipecmd_list[p_list].left = cmd;
-        pipecmd_list[p_list].right = parsecmd(ps,es);
-        cmd = pipecmd_list + p_list;
-        p_list++;
+void runcmd(char *argv[],int argc){
+  int i;
+  for(i=0;i<argc;i++){
+    if(!strcmp(argv[i],"|")){
+      execpipe(i,argv,argc);
     }
-    return cmd;
+  }
+  for(i=0;i<argc;i++){
+    if(!strcmp(argv[i],"<")){
+      if(i==argc-1){
+        fprintf(2,"missing file for redirection");
+      }
+      close(0);
+      if(open(argv[i+1],O_RDONLY)<0){
+        fprintf(2,"open %s failed",argv[i+1]);
+        exit(-1);
+      }
+      argv[i] = 0;
+    }
+    if(!strcmp(argv[i],">")){
+      if(i==argc-1){
+        fprintf(2,"missing file for redirection");
+      }
+      close(1);
+      if(open(argv[i+1],O_CREATE|O_WRONLY)<0){
+        fprintf(2,"open %s failed",argv[i+1]);
+        exit(-1);
+      }
+      argv[i] = 0;
+    }
+  }
+  exec(argv[0],argv);
 }
 
 int
 main(void)
 {
   static char buf[100];
-
+  char *argv[MAXARG];
 
   // Read and run input commands.
   while(getcmd(buf, sizeof(buf)) >= 0){
@@ -139,8 +110,15 @@ main(void)
         fprintf(2, "cannot cd %s\n", buf+3);
       continue;
     }
-    if(fork() == 0)
-      runcmd(parsecmd(buf,buf+strlen(buf)));
+    if(fork() == 0){
+      parsecmd(buf);
+      int i = 0;
+      for(i=0;i<l;i++){
+        argv[i] = args[i];
+      }
+      argv[i] = 0;
+      runcmd(argv,l);
+    }
     wait(0);
   }
   exit(0);
